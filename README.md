@@ -32,7 +32,7 @@ AUC, balanced accuracy, sensitivity, specificity per region, with permutation te
 | Module | What it does |
 |---|---|
 | `causal.py` | PC (Fisher-z), GES (BIC) and DirectLiNGAM via causal-learn. Convention: `A[i, j]` is the influence of region *i* on region *j*. PC/GES edges whose direction is undetermined are kept in both directions; edge weights are OLS coefficients or binary. Loads rDCM or other matrices from `.npy`/`.mat`. |
-| `embedding.py` | node2vec on directed, weighted graphs (walks follow edge direction and absolute strength, biased by *p* and *q*), and connectivity-profile features. |
+| `embedding.py` | node2vec on directed, weighted graphs with [PecanPy](https://github.com/krishnanlab/PecanPy) (the implementation used in the paper), plus a short pure-Python version of the same algorithm. Also connectivity-profile features. |
 | `resampling.py` | SMOTE, SVM-SMOTE, SMOTE-Tomek, and NearMiss → SVM-SMOTE → Tomek links. Used only inside training folds. |
 | `mrmr.py` | mRMR feature selection as a scikit-learn transformer, so it can be fitted per fold. |
 | `evaluate.py` | Per-region cross-validated evaluation, permutation tests, Benjamini–Hochberg correction. |
@@ -49,11 +49,17 @@ All steps that learn from data run **inside each cross-validation fold**, on the
 - **Region selection is tested.** The best regions can be checked with a permutation test that re-runs the whole pipeline on shuffled labels, with Benjamini–Hochberg correction across all regions.
 - **Control subsampling is repeated.** If controls are undersampled, results are reported over several random subsets.
 
+## Using PecanPy: negative edges and reproducibility
+
+Causal graphs contain negative (inhibitory) edges, and PecanPy never walks along a negative edge. If a signed matrix is passed to it directly, those edges are silently ignored. By default the walks here therefore use absolute edge strengths (`--edge-weights abs`). `--edge-weights positive` keeps only positive edges, which reproduces what PecanPy does with signed input.
+
+PecanPy also generates walks on several threads, and with more than one thread the same `random_state` gives a different embedding on every run. Walks are generated on one thread here, which makes results reproducible; subjects are processed in parallel instead (`--n-jobs`).
+
 ## A limitation of node2vec features
 
 node2vec is fitted separately for each subject, and each subject's embedding space is only defined up to an arbitrary rotation, so the same coordinate does not necessarily mean the same thing in two subjects. Using one random seed for all subjects (the default here) makes the spaces partly comparable, not guaranteed to be.
 
-`scripts/demo_end_to_end.py` shows the consequence on synthetic data where patients differ by a single edge, 2 → 4. Connectivity-profile features localise the difference to the regions on and downstream of that edge. node2vec features with a shared seed still separate the groups, but the strongest regions (15, 1, 3, 12) are mostly unrelated to that edge. When each subject's embedding was trained with a different seed, the group difference disappeared (AUC around 0.5). Region-level conclusions from node2vec features should therefore be checked against `--features profile`, whose coordinates are comparable across subjects by construction.
+`scripts/demo_end_to_end.py` shows the consequence on synthetic data where patients differ by a single edge, 2 → 4. Connectivity-profile features give AUC 1.00 to regions 2–6, the regions on and downstream of that edge. node2vec features (PecanPy, one seed for all subjects) also put regions 3 and 2 near the top, but regions 15, 12 and 13, which are unrelated to the edge, score 0.97, 0.88 and 0.87. When each subject's embedding was trained with a different seed, the group difference disappeared. Region-level conclusions from node2vec features should therefore be checked against `--features profile`, whose coordinates are comparable across subjects by construction.
 
 ## Not included
 
@@ -72,7 +78,7 @@ pip install -r requirements.txt
 
 ## Quick start
 
-Whole pipeline on synthetic data, about 10 seconds:
+Whole pipeline on synthetic data, a few minutes (PecanPy compiles its walk function once per subject):
 
 ```bash
 python scripts/demo_end_to_end.py
@@ -100,7 +106,7 @@ python scripts/build_embeddings.py --timeseries-dir data/controls_ts/ --method p
 python scripts/build_embeddings.py --matrices data/rdcm_controls.mat --transpose --out data/controls
 ```
 
-Each run writes `<out>_graphs.npy`, `<out>_embeddings.npy` and `<out>_settings.json`. Options: `--method pc|ges|lingam`, `--features node2vec|profile`, `--dim`, `--p`, `--q`, `--walk-length`, `--walks-per-node`, `--seed`, `--n-jobs`.
+Each run writes `<out>_graphs.npy`, `<out>_embeddings.npy` and `<out>_settings.json`. Options: `--method pc|ges|lingam`, `--features node2vec|profile`, `--backend pecanpy|builtin`, `--edge-weights abs|positive`, `--dim`, `--p`, `--q`, `--walk-length`, `--walks-per-node`, `--seed`, `--n-jobs`.
 
 **2. Classify.**
 
@@ -138,7 +144,7 @@ The node CSV needs the columns `x,y,z,size,colour,label`.
 pytest
 ```
 
-The tests check that LiNGAM recovers edge directions on non-Gaussian data, that PC and GES recover the skeleton, causal-learn's graph encoding is converted correctly, node2vec is deterministic and places linked regions closer together, feature selection is fitted on n−1 subjects under leave-one-out, every resampling option runs, and an informative region is detected while a noise region is not.
+The tests check that LiNGAM recovers edge directions on non-Gaussian data, that PC and GES recover the skeleton, causal-learn's graph encoding is converted correctly, both node2vec backends are deterministic and separate two unconnected groups of regions, negative edges are handled as documented, feature selection is fitted on n−1 subjects under leave-one-out, every resampling option runs, and an informative region is detected while a noise region is not.
 
 ## Citation
 

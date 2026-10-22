@@ -1,9 +1,9 @@
 """node2vec embeddings of directed, weighted connectivity graphs.
 
 Each region becomes a vector summarising its position in the subject's causal
-graph. Walks follow edge direction (source -> target) and edge strength
-(absolute weight). The return parameter ``p`` and in-out parameter ``q`` bias
-the walk as in Grover & Leskovec (2016):
+graph. Walks follow edge direction (source -> target) and edge strength.
+The return parameter ``p`` and in-out parameter ``q`` bias the walk as in
+Grover & Leskovec (2016):
 
     returning to the previous node      weight / p
     moving to a neighbour of it         weight
@@ -12,6 +12,19 @@ the walk as in Grover & Leskovec (2016):
 With ``p=2, q=0.5`` walks avoid going straight back and tend to explore
 outwards, so embeddings reflect longer causal pathways rather than only local
 neighbourhoods.
+
+Two backends compute the same thing:
+
+* ``"pecanpy"`` (default): PecanPy (Liu & Krishnan, 2021), the implementation
+  used in the paper.
+* ``"builtin"``: a short pure-Python version, useful for reading the algorithm
+  or when PecanPy cannot be installed.
+
+Edge weights: causal graphs have negative edges, and PecanPy never walks along
+a negative edge. ``edge_weights="abs"`` (default) walks on absolute strengths,
+so inhibitory and excitatory influences both count. ``edge_weights="positive"``
+keeps only positive edges, which is what PecanPy does when it is given a
+signed matrix directly.
 
 Important limitation: node2vec is fitted separately for each subject, and the
 resulting vector spaces are only defined up to an arbitrary rotation. Using the
@@ -39,11 +52,25 @@ class Node2VecConfig:
     window: int = 5
     epochs: int = 5
     seed: int = 0
+    backend: str = "pecanpy"        # "pecanpy" or "builtin"
+    edge_weights: str = "abs"       # "abs" or "positive"
+
+
+BACKENDS = ("pecanpy", "builtin")
+EDGE_WEIGHTS = ("abs", "positive")
+
+
+def _walk_matrix(W: np.ndarray, edge_weights: str) -> np.ndarray:
+    W = np.asarray(W, float).copy()
+    np.fill_diagonal(W, 0.0)
+    if edge_weights == "abs":
+        return np.abs(W)
+    if edge_weights == "positive":
+        return np.clip(W, 0.0, None)
+    raise ValueError(f"edge_weights must be one of {EDGE_WEIGHTS}, got {edge_weights!r}")
 
 
 def _random_walks(W: np.ndarray, cfg: Node2VecConfig, rng: np.random.Generator) -> list[list[str]]:
-    W = np.abs(np.asarray(W, float))
-    np.fill_diagonal(W, 0.0)
     n = W.shape[0]
     out_neighbours = [np.flatnonzero(W[i]) for i in range(n)]
     walks = []
@@ -66,20 +93,46 @@ def _random_walks(W: np.ndarray, cfg: Node2VecConfig, rng: np.random.Generator) 
     return walks
 
 
-def node2vec_embedding(W: np.ndarray, cfg: Node2VecConfig | None = None) -> np.ndarray:
-    """Embed one connectivity matrix. Returns (regions, dim).
-
-    Regions with no edges still get a vector (from walks of length one), but it
-    carries no structural information.
-    """
+def _embed_builtin(W: np.ndarray, cfg: Node2VecConfig) -> np.ndarray:
     from gensim.models import Word2Vec
 
-    cfg = cfg or Node2VecConfig()
     rng = np.random.default_rng(cfg.seed)
     walks = _random_walks(W, cfg, rng)
     model = Word2Vec(walks, vector_size=cfg.dim, window=cfg.window, min_count=0, sg=1,
                      workers=1, epochs=cfg.epochs, seed=cfg.seed)
     return np.stack([model.wv[str(i)] for i in range(W.shape[0])])
+
+
+def _embed_pecanpy(W: np.ndarray, cfg: Node2VecConfig) -> np.ndarray:
+    import numba
+    from pecanpy import pecanpy
+
+    # PecanPy generates walks on several threads, each seeded separately, and
+    # which walks a thread gets depends on scheduling. With more than one thread
+    # the same seed gives different embeddings on every run. One thread per
+    # process makes it reproducible; parallelise over subjects instead (n_jobs).
+    numba.set_num_threads(1)
+
+    ids = [str(i) for i in range(W.shape[0])]
+    g = pecanpy.DenseOTF.from_mat(W.astype(np.float32), ids, p=cfg.p, q=cfg.q,
+                                  workers=1, random_state=cfg.seed)
+    return np.asarray(g.embed(dim=cfg.dim, num_walks=cfg.walks_per_node, walk_length=cfg.walk_length,
+                              window_size=cfg.window, epochs=cfg.epochs))
+
+
+def node2vec_embedding(W: np.ndarray, cfg: Node2VecConfig | None = None) -> np.ndarray:
+    """Embed one connectivity matrix, ``W[i, j]`` = edge i -> j. Returns (regions, dim).
+
+    Regions with no edges still get a vector, but it carries no structural
+    information.
+    """
+    cfg = cfg or Node2VecConfig()
+    Wp = _walk_matrix(W, cfg.edge_weights)
+    if cfg.backend == "pecanpy":
+        return _embed_pecanpy(Wp, cfg)
+    if cfg.backend == "builtin":
+        return _embed_builtin(Wp, cfg)
+    raise ValueError(f"backend must be one of {BACKENDS}, got {cfg.backend!r}")
 
 
 def embed_subjects(matrices: np.ndarray, cfg: Node2VecConfig | None = None, n_jobs: int = 1) -> np.ndarray:

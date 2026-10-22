@@ -36,16 +36,17 @@ def main() -> None:
 
     features = {
         "connectivity profile": connectivity_profile(graphs),
-        "node2vec (shared seed)": embed_subjects(
-            graphs, Node2VecConfig(dim=16, walks_per_node=30, walk_length=10, seed=0)),
+        "node2vec, PecanPy (shared seed)": embed_subjects(
+            graphs, Node2VecConfig(dim=16, walks_per_node=30, walk_length=10, seed=0), n_jobs=-1),
     }
     for name, X in features.items():
         table = evaluate_all_regions(X, y, cfg)
         print(f"\nAUC by region, {name}:")
         print(table["auc"].round(2).head(8).to_string())
 
-    print("\nThe group difference is the edge 2 -> 4. Connectivity-profile features localise it to the "
-          "regions on and downstream of that edge; node2vec features spread it across the graph.")
+    print("\nThe only group difference is the edge 2 -> 4. Connectivity-profile features rank the regions "
+          "on and downstream of that edge highest. With node2vec, regions unrelated to the edge can score "
+          "almost as high, because embedding coordinates are not aligned across subjects.")
 
 
 if __name__ == "__main__":

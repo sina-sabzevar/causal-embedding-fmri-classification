@@ -53,17 +53,20 @@ def test_node2vec_shape_and_determinism():
     np.testing.assert_allclose(e1, e2)
 
 
-def test_node2vec_neighbours_are_closer_than_distant_nodes():
-    # two separate chains: nodes within a chain should be more similar
-    W = np.zeros((8, 8))
-    for i in range(3):
-        W[i, i + 1] = 1.0
-        W[i + 4, i + 5] = 1.0
-    emb = node2vec_embedding(W, Node2VecConfig(dim=16, walks_per_node=200, walk_length=10, seed=0))
+@pytest.mark.parametrize("backend", ["pecanpy", "builtin"])
+def test_node2vec_separates_communities(backend):
+    # two densely connected groups of 6 regions with no edges between them
+    W = np.zeros((12, 12))
+    for block in (range(0, 6), range(6, 12)):
+        for i in block:
+            for j in block:
+                if i != j:
+                    W[i, j] = 1.0
+    emb = node2vec_embedding(W, Node2VecConfig(dim=16, walks_per_node=50, walk_length=10, seed=0, backend=backend))
     emb = emb / np.linalg.norm(emb, axis=1, keepdims=True)
-    within = emb[1] @ emb[2]
-    across = emb[1] @ emb[6]
-    assert within > across
+    S = emb @ emb.T
+    same = np.r_[S[:6, :6][~np.eye(6, dtype=bool)], S[6:, 6:][~np.eye(6, dtype=bool)]].mean()
+    assert same > S[:6, 6:].mean()
 
 
 def test_load_matrices_and_orient(tmp_path):
@@ -79,3 +82,22 @@ def test_load_matrices_and_orient(tmp_path):
 def test_make_samplers_rejects_unknown():
     with pytest.raises(ValueError):
         make_samplers("magic")
+
+
+def test_pecanpy_backend_shape_and_determinism():
+    W = np.zeros((6, 6))
+    for i in range(5):
+        W[i, i + 1] = 0.5
+    W[5, 0] = -0.4
+    cfg = Node2VecConfig(dim=8, walks_per_node=5, walk_length=6, backend="pecanpy")
+    a, b = node2vec_embedding(W, cfg), node2vec_embedding(W, cfg)
+    assert a.shape == (6, 8)
+    assert np.allclose(a, b)
+
+
+def test_edge_weight_modes():
+    from causal_embed_clf.embedding import _walk_matrix
+
+    W = np.array([[0.0, 0.8, -0.5], [0.0, 0.0, 0.3], [0.2, 0.0, 0.0]])
+    assert _walk_matrix(W, "abs")[0, 2] == 0.5
+    assert _walk_matrix(W, "positive")[0, 2] == 0.0

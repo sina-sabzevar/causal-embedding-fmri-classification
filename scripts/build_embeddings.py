@@ -58,6 +58,10 @@ def main() -> None:
 
     p.add_argument("--features", choices=["node2vec", "profile"], default="node2vec",
                    help="node2vec embeddings, or each region's in/out connectivity profile")
+    p.add_argument("--backend", choices=["pecanpy", "builtin"], default="pecanpy",
+                   help="node2vec implementation (PecanPy was used in the paper)")
+    p.add_argument("--edge-weights", choices=["abs", "positive"], default="abs",
+                   help="walk on |weight|, or on positive edges only (PecanPy's behaviour on signed input)")
     p.add_argument("--dim", type=int, default=64)
     p.add_argument("--walk-length", type=int, default=20)
     p.add_argument("--walks-per-node", type=int, default=50)
@@ -97,8 +101,10 @@ def main() -> None:
         print("features: connectivity profile (out- and in-edges per region)")
     else:
         cfg = Node2VecConfig(dim=a.dim, walk_length=a.walk_length, walks_per_node=a.walks_per_node,
-                             p=a.p, q=a.q, window=a.window, seed=a.seed)
-        print(f"features: node2vec, dim={cfg.dim}, p={cfg.p}, q={cfg.q}, shared seed={cfg.seed}")
+                             p=a.p, q=a.q, window=a.window, seed=a.seed,
+                             backend=a.backend, edge_weights=a.edge_weights)
+        print(f"features: node2vec ({cfg.backend}), dim={cfg.dim}, p={cfg.p}, q={cfg.q}, "
+              f"edges={cfg.edge_weights}, shared seed={cfg.seed}")
         emb = embed_subjects(graphs, cfg, n_jobs=a.n_jobs)
 
     np.save(f"{out}_graphs.npy", graphs)
