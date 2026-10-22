@@ -1,0 +1,18 @@
+# Participant data must never be committed
+data/
+*.npy
+*.npz
+*.mat
+*.nii
+*.nii.gz
+
+# Outputs
+results/
+fig/
+
+# Python
+__pycache__/
+*.pyc
+.pytest_cache/
+.venv/
+.ipynb_checkpoints/
