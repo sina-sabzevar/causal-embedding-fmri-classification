@@ -1,22 +1,42 @@
 # Causal connectivity embeddings for fMRI classification
 
-Per-region classification of patients versus controls from **node embeddings of directed (causal) brain connectivity graphs** estimated from resting-state fMRI.
+Finding brain regions whose **directed (causal) connectivity** distinguishes patients from controls, from resting-state fMRI, in small and class-imbalanced cohorts.
 
-This repository contains the classification and visualisation stage of:
+This repository is a cleaned re-implementation of the pipeline in:
 
 > Sabzevar, S., Masoudnia, S., Araabi, B. N., NazemZadeh, M., & Tavakoli, H. (2024). Enhanced diagnosis of schizophrenia using integrated node embedding and causal discovery on imbalanced fMRI data. *10th International Conference on Signal Processing and Intelligent Systems (ICSPIS)*, IEEE, 234–239. https://doi.org/10.1109/ICSPIS65223.2024.10931071
 
-## What it does
+Numbers obtained with this code may differ from those reported in the paper; see [Evaluation protocol](#evaluation-protocol).
 
-For each brain region, the node embedding of that region (one vector per subject) is used to classify patients against controls. The question is which regions' causal connectivity profiles carry diagnostic information, in small and class-imbalanced cohorts.
+## Pipeline
 
 ```
-causal connectivity graph per subject   (estimated beforehand, e.g. rDCM or LiNGAM)
-        -> node embeddings                (e.g. node2vec)   shape: subjects x regions x dim
-        -> for each region:
-              mRMR feature selection -> scaling -> resampling -> SVM
-              evaluated by leave-one-out or repeated stratified k-fold CV
+regional fMRI time series            one (timepoints x regions) array per subject
+   |
+   |  1. causal discovery            PC, GES or DirectLiNGAM   -> causal.py
+   |                                 (or import rDCM matrices from MATLAB)
+   v
+directed connectivity matrix         one (regions x regions) matrix per subject
+   |
+   |  2. region features             node2vec (p=2, q=0.5)     -> embedding.py
+   |                                 or connectivity profile
+   v
+region features                      (subjects x regions x dim)
+   |
+   |  3. per-region classification   inside every CV fold:     -> evaluate.py
+   |                                 mRMR -> scaling -> resampling -> SVM
+   v
+AUC, balanced accuracy, sensitivity, specificity per region, with permutation tests
 ```
+
+| Module | What it does |
+|---|---|
+| `causal.py` | PC (Fisher-z), GES (BIC) and DirectLiNGAM via causal-learn. Convention: `A[i, j]` is the influence of region *i* on region *j*. PC/GES edges whose direction is undetermined are kept in both directions; edge weights are OLS coefficients or binary. Loads rDCM or other matrices from `.npy`/`.mat`. |
+| `embedding.py` | node2vec on directed, weighted graphs (walks follow edge direction and absolute strength, biased by *p* and *q*), and connectivity-profile features. |
+| `resampling.py` | SMOTE, SVM-SMOTE, SMOTE-Tomek, and NearMiss → SVM-SMOTE → Tomek links. Used only inside training folds. |
+| `mrmr.py` | mRMR feature selection as a scikit-learn transformer, so it can be fitted per fold. |
+| `evaluate.py` | Per-region cross-validated evaluation, permutation tests, Benjamini–Hochberg correction. |
+| `viz.py` | ROC curves, connectivity heatmaps, circular connection plots, BrainNet Viewer exports. |
 
 ## Evaluation protocol
 
@@ -24,21 +44,22 @@ All steps that learn from data run **inside each cross-validation fold**, on the
 
 - **Feature selection** (mRMR) is fitted per fold. Selecting features on the full dataset before cross-validation leaks the held-out subject's label into the model and inflates accuracy, often substantially in cohorts of tens of subjects.
 - **Scaling** is fitted on the training fold only.
-- **Resampling** (SMOTE, SVM-SMOTE, SMOTE-Tomek, or NearMiss followed by SVM-SMOTE and Tomek links) is applied to the training fold only. Held-out subjects are never resampled.
-- **One ROC curve per region.** Scores from different regions' models are never pooled into a single curve.
-- **Region selection is tested.** Picking the best regions out of many and reporting their accuracy is optimistic, so the best regions can be checked with a permutation test that re-runs the whole pipeline on shuffled labels, with Benjamini–Hochberg correction across all regions.
-- **Control subsampling is repeated.** If controls are undersampled, the analysis runs over several random subsets and reports the spread, not a single arbitrary subset.
+- **Resampling** is applied to the training fold only. Held-out subjects are never resampled.
+- **One ROC curve per region.** Scores from different regions' models are never pooled.
+- **Region selection is tested.** The best regions can be checked with a permutation test that re-runs the whole pipeline on shuffled labels, with Benjamini–Hochberg correction across all regions.
+- **Control subsampling is repeated.** If controls are undersampled, results are reported over several random subsets.
 
-This is a cleaned re-implementation of the classification stage under the protocol above. Numbers obtained with it may differ from those reported in the paper.
+## A limitation of node2vec features
+
+node2vec is fitted separately for each subject, and each subject's embedding space is only defined up to an arbitrary rotation, so the same coordinate does not necessarily mean the same thing in two subjects. Using one random seed for all subjects (the default here) makes the spaces partly comparable, not guaranteed to be.
+
+`scripts/demo_end_to_end.py` shows the consequence on synthetic data where patients differ by a single edge, 2 → 4. Connectivity-profile features localise the difference to the regions on and downstream of that edge. node2vec features with a shared seed still separate the groups, but the strongest regions (15, 1, 3, 12) are mostly unrelated to that edge. When each subject's embedding was trained with a different seed, the group difference disappeared (AUC around 0.5). Region-level conclusions from node2vec features should therefore be checked against `--features profile`, whose coordinates are comparable across subjects by construction.
 
 ## Not included
 
-- fMRI preprocessing
-- Causal discovery (rDCM, PC, GES, LiNGAM)
-- Node embedding (node2vec)
-- Any participant data
-
-The code expects precomputed embedding arrays as input. A synthetic data generator is included so everything can be run and tested without patient data.
+- fMRI preprocessing and parcellation
+- rDCM estimation, which runs in MATLAB through the TAPAS toolbox. Export its matrices and load them with `--matrices`; pass `--transpose` if `A[i, j]` means *j → i*.
+- Any participant data. `.gitignore` blocks `.npy`, `.mat` and NIfTI files.
 
 ## Installation
 
@@ -49,51 +70,67 @@ python -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
-## Quick start (synthetic data)
+## Quick start
+
+Whole pipeline on synthetic data, about 10 seconds:
+
+```bash
+python scripts/demo_end_to_end.py
+```
+
+Classification stage alone on synthetic embeddings (regions 3 and 7 are the informative ones):
 
 ```bash
 python scripts/run_classification.py --synthetic --out results/demo
 ```
 
-The synthetic data has 20 regions, of which regions 3 and 7 differ between groups. They should appear at the top of `results/demo/regions_summary.csv`.
+## Running on your own data
 
-## Running on your own embeddings
+**1. Build graphs and features, once per group.**
 
-One array per group, each of shape `(subjects, regions, embedding_dim)`:
+```bash
+# time series as one array (subjects, timepoints, regions)
+python scripts/build_embeddings.py --timeseries data/controls_ts.npy --method lingam --out data/controls
+python scripts/build_embeddings.py --timeseries data/patients_ts.npy --method lingam --out data/patients
+
+# or a folder with one (timepoints, regions) .npy per subject
+python scripts/build_embeddings.py --timeseries-dir data/controls_ts/ --method pc --out data/controls
+
+# or precomputed matrices, e.g. rDCM from MATLAB
+python scripts/build_embeddings.py --matrices data/rdcm_controls.mat --transpose --out data/controls
+```
+
+Each run writes `<out>_graphs.npy`, `<out>_embeddings.npy` and `<out>_settings.json`. Options: `--method pc|ges|lingam`, `--features node2vec|profile`, `--dim`, `--p`, `--q`, `--walk-length`, `--walks-per-node`, `--seed`, `--n-jobs`.
+
+**2. Classify.**
 
 ```bash
 python scripts/run_classification.py \
-    --controls data/controls.npy --patients data/patients.npy \
-    --resampling smotetomek --cv loo --out results/run1
+    --controls data/controls_embeddings.npy --patients data/patients_embeddings.npy \
+    --resampling smotetomek --cv loo --permutation-top 10 --out results/run1
 ```
-
-Or one array plus a 0/1 label vector: `--embeddings data/X.npy --labels data/y.npy`.
-
-Useful options:
 
 | Option | Meaning |
 |---|---|
 | `--resampling` | `none`, `smote`, `svmsmote`, `smotetomek`, `nearmiss-svmsmote-tomek` |
 | `--cv` | `loo` or `repeated-kfold` (5 folds x 10 repeats) |
-| `--k-features` | number of mRMR features per region (default 30) |
-| `--kernel`, `--C` | SVM settings |
-| `--threshold` | decision-function threshold (default 0) |
+| `--k-features` | mRMR features per region (default 30) |
+| `--kernel`, `--C`, `--threshold` | SVM settings; threshold applies to the decision function |
 | `--n-controls`, `--n-subsamples` | undersample controls, repeated over several seeds |
 | `--permutation-top N` | permutation-test the N best regions |
-| `--n-jobs` | regions evaluated in parallel |
 
-Outputs: `regions_summary.csv` (one row per region: AUC, balanced accuracy, sensitivity, specificity, precision, F1), `regions_all_subsets.csv`, one ROC figure per top region, and `config.json` recording every setting.
+Outputs: `regions_summary.csv` (one row per region), `regions_all_subsets.csv`, one ROC figure per top region, and `config.json`.
 
-## Figures and BrainNet Viewer
+**3. Figures and BrainNet Viewer.**
 
 ```bash
-python scripts/make_figures.py heatmap     --matrix data/rdcm.npy --subject 5 --out fig/heatmap.png
-python scripts/make_figures.py connections --matrix data/rdcm.npy --regions 5 25 50 --out fig/connections.png
+python scripts/make_figures.py heatmap     --matrix data/controls_graphs.npy --subject 0 --out fig/heatmap.png
+python scripts/make_figures.py connections --matrix data/controls_graphs.npy --regions 5 25 50 --out fig/connections.png
 python scripts/make_figures.py brainnet    --nodes-csv data/top_regions.csv --out fig/regions.node
 python scripts/make_figures.py resampling  --synthetic --region 3 --out fig/resampling.png
 ```
 
-`--matrix` must be a square region-by-region connectivity matrix (or a stack of them), not an embedding array. The node CSV needs the columns `x,y,z,size,colour,label`.
+The node CSV needs the columns `x,y,z,size,colour,label`.
 
 ## Tests
 
@@ -101,7 +138,7 @@ python scripts/make_figures.py resampling  --synthetic --region 3 --out fig/resa
 pytest
 ```
 
-The tests check, among other things, that feature selection is fitted on n−1 subjects under leave-one-out, that every resampling option runs, and that an informative region is detected while a noise region is not.
+The tests check that LiNGAM recovers edge directions on non-Gaussian data, that PC and GES recover the skeleton, causal-learn's graph encoding is converted correctly, node2vec is deterministic and places linked regions closer together, feature selection is fitted on n−1 subjects under leave-one-out, every resampling option runs, and an informative region is detected while a noise region is not.
 
 ## Citation
 

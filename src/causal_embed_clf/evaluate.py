@@ -18,10 +18,7 @@ from dataclasses import dataclass, field
 
 import numpy as np
 import pandas as pd
-from imblearn.combine import SMOTETomek
-from imblearn.over_sampling import SMOTE, SVMSMOTE
 from imblearn.pipeline import Pipeline
-from imblearn.under_sampling import NearMiss, TomekLinks
 from joblib import Parallel, delayed
 from sklearn.base import clone
 from sklearn.metrics import (
@@ -36,9 +33,7 @@ from sklearn.preprocessing import StandardScaler
 from sklearn.svm import SVC
 
 from .mrmr import MRMRSelector
-
-RESAMPLING_OPTIONS = ("none", "smote", "svmsmote", "smotetomek", "nearmiss-svmsmote-tomek")
-
+from .resampling import RESAMPLING_OPTIONS, make_samplers
 
 @dataclass
 class EvalConfig:
@@ -55,28 +50,10 @@ class EvalConfig:
     extra: dict = field(default_factory=dict)
 
 
-def _sampler_steps(name: str, random_state: int) -> list:
-    if name == "none":
-        return []
-    if name == "smote":
-        return [("smote", SMOTE(random_state=random_state))]
-    if name == "svmsmote":
-        return [("svmsmote", SVMSMOTE(random_state=random_state))]
-    if name == "smotetomek":
-        return [("smotetomek", SMOTETomek(random_state=random_state))]
-    if name == "nearmiss-svmsmote-tomek":
-        return [
-            ("nearmiss", NearMiss(version=2, sampling_strategy=0.6)),
-            ("svmsmote", SVMSMOTE(random_state=random_state)),
-            ("tomek", TomekLinks()),
-        ]
-    raise ValueError(f"Unknown resampling '{name}'. Options: {RESAMPLING_OPTIONS}")
-
-
 def build_pipeline(cfg: EvalConfig) -> Pipeline:
     """Feature selection, scaling, resampling and SVM as one fold-safe pipeline."""
     steps = [("select", MRMRSelector(k=cfg.k_features)), ("scale", StandardScaler())]
-    steps += _sampler_steps(cfg.resampling, cfg.random_state)
+    steps += make_samplers(cfg.resampling, cfg.random_state)
     steps.append(("svm", SVC(kernel=cfg.kernel, C=cfg.C, class_weight=cfg.class_weight)))
     return Pipeline(steps)
 

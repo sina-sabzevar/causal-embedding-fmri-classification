@@ -12,6 +12,8 @@ on the training fold only, never on the full dataset.
 
 from __future__ import annotations
 
+import warnings
+
 import numpy as np
 from sklearn.base import BaseEstimator, TransformerMixin
 from sklearn.feature_selection import f_classif
@@ -36,7 +38,9 @@ class MRMRSelector(BaseEstimator, TransformerMixin):
         n_features = X.shape[1]
         k = min(self.k, n_features)
 
-        relevance, _ = f_classif(X, y)
+        with warnings.catch_warnings():          # constant columns give 0/0; scored as 0 below
+            warnings.simplefilter("ignore", RuntimeWarning)
+            relevance, _ = f_classif(X, y)
         relevance = np.nan_to_num(relevance, nan=0.0, posinf=0.0)
 
         # Absolute Pearson correlation between features, computed once.
